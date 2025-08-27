@@ -23,7 +23,6 @@ import java.util.concurrent.Executors;
 public class VideoCompressor {
 
     private static final String TAG = "VideoCompressor";
-    private static final long TIMEOUT_US = 10000;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Context context;
@@ -40,18 +39,13 @@ public class VideoCompressor {
             MediaCodec videoEncoder = null;
             MediaCodec audioEncoder = null;
 
+            // Track/muxer state
+            int outVideoTrackIndex = -1;
+            int outAudioTrackIndex = -1;
+            boolean hasAudio = false;
             boolean muxerStarted = false;
-            int outVideoTrack = -1;
-            int outAudioTrack = -1;
 
             try {
-                // Ensure destination dir exists
-                File destFile = new File(destinationPath);
-                File parent = destFile.getParentFile();
-                if (parent != null && !parent.exists()) {
-                    parent.mkdirs();
-                }
-
                 // Initialize MediaExtractor to read the source video and audio
                 videoExtractor.setDataSource(sourcePath);
                 audioExtractor.setDataSource(sourcePath);
@@ -59,7 +53,7 @@ public class VideoCompressor {
                 // Select video and audio tracks
                 int videoTrackIndex = selectTrack(videoExtractor, "video/");
                 int audioTrackIndex = selectTrack(audioExtractor, "audio/");
-                final boolean hasAudio = audioTrackIndex != -1;
+                hasAudio = audioTrackIndex != -1;
 
                 if (videoTrackIndex == -1) {
                     throw new IOException("No video track found in the source file.");
@@ -110,61 +104,65 @@ public class VideoCompressor {
 
                 // Initialize MediaMuxer to write the compressed video
                 mediaMuxer = new MediaMuxer(destinationPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-
-                // Select source tracks
+                
+                // Add video track to muxer
                 videoExtractor.selectTrack(videoTrackIndex);
                 MediaCodec.BufferInfo videoBufferInfo = new MediaCodec.BufferInfo();
+                // Use safe duration read
                 long videoDurationUs = inputVideoFormat.containsKey(MediaFormat.KEY_DURATION)
                         ? inputVideoFormat.getLong(MediaFormat.KEY_DURATION) : 0L;
 
                 // --- Video Compression Loop ---
                 while (true) {
-                    int inIndex = videoEncoder.dequeueInputBuffer(TIMEOUT_US);
-                    if (inIndex >= 0) {
-                        ByteBuffer inBuf = videoEncoder.getInputBuffer(inIndex);
+                    int inputBufferIndex = videoEncoder.dequeueInputBuffer(-1);
+                    if (inputBufferIndex >= 0) {
+                        ByteBuffer inBuf = videoEncoder.getInputBuffer(inputBufferIndex);
                         int sampleSize = videoExtractor.readSampleData(inBuf, 0);
                         if (sampleSize < 0) {
-                            videoEncoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            videoEncoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                         } else {
-                            long pts = videoExtractor.getSampleTime();
+                            long presentationTimeUs = videoExtractor.getSampleTime();
                             int flags = videoExtractor.getSampleFlags();
                             if (flags < 0) flags = 0;
-                            videoEncoder.queueInputBuffer(inIndex, 0, sampleSize, pts, flags);
+                            videoEncoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, presentationTimeUs, flags);
 
                             if (videoDurationUs > 0) {
-                                int progress = (int) Math.min(99, Math.max(0, (pts * 100) / videoDurationUs));
+                                int progress = (int) Math.min(99, Math.max(0, (presentationTimeUs * 100) / videoDurationUs));
                                 callback.onProgress(progress);
                             }
                             videoExtractor.advance();
                         }
                     }
 
-                    int outIndex = videoEncoder.dequeueOutputBuffer(videoBufferInfo, TIMEOUT_US);
-                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        // Add video track on format changed
-                        MediaFormat newFormat = videoEncoder.getOutputFormat();
-                        outVideoTrack = mediaMuxer.addTrack(newFormat);
-                        if (!hasAudio) {
-                            mediaMuxer.start();
-                            muxerStarted = true;
-                        } else if (outAudioTrack != -1 && !muxerStarted) {
-                            mediaMuxer.start();
-                            muxerStarted = true;
-                        }
-                    } else if (outIndex >= 0) {
-                        if ((videoBufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                            // Ignore config buffers
-                            videoBufferInfo.size = 0;
-                        }
-                        if (videoBufferInfo.size > 0 && muxerStarted && outVideoTrack != -1) {
-                            ByteBuffer outBuf = videoEncoder.getOutputBuffer(outIndex);
-                            if (outBuf != null) {
-                                outBuf.position(videoBufferInfo.offset);
-                                outBuf.limit(videoBufferInfo.offset + videoBufferInfo.size);
-                                mediaMuxer.writeSampleData(outVideoTrack, outBuf, videoBufferInfo);
+                    int outputBufferIndex = videoEncoder.dequeueOutputBuffer(videoBufferInfo, 0);
+                    if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // Add video track when encoder output format becomes available
+                        if (outVideoTrackIndex == -1) {
+                            MediaFormat newFormat = videoEncoder.getOutputFormat();
+                            outVideoTrackIndex = mediaMuxer.addTrack(newFormat);
+                            // If there's no audio, we can start now
+                            if (!hasAudio && !muxerStarted) {
+                                mediaMuxer.start();
+                                muxerStarted = true;
+                            } else if (hasAudio && outAudioTrackIndex != -1 && !muxerStarted) {
+                                // Start when both tracks added
+                                mediaMuxer.start();
+                                muxerStarted = true;
                             }
                         }
-                        videoEncoder.releaseOutputBuffer(outIndex, false);
+                    } else if (outputBufferIndex >= 0) {
+                        if ((videoBufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            videoBufferInfo.size = 0;
+                        }
+                        if (videoBufferInfo.size > 0 && muxerStarted && outVideoTrackIndex != -1) {
+                            ByteBuffer outputBuffer = videoEncoder.getOutputBuffer(outputBufferIndex);
+                            if (outputBuffer != null) {
+                                outputBuffer.position(videoBufferInfo.offset);
+                                outputBuffer.limit(videoBufferInfo.offset + videoBufferInfo.size);
+                                mediaMuxer.writeSampleData(outVideoTrackIndex, outputBuffer, videoBufferInfo);
+                            }
+                        }
+                        videoEncoder.releaseOutputBuffer(outputBufferIndex, false);
 
                         if ((videoBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             break;
@@ -191,73 +189,73 @@ public class VideoCompressor {
                     MediaCodec.BufferInfo audioBufferInfo = new MediaCodec.BufferInfo();
 
                     while (true) {
-                        int inIndex = audioEncoder.dequeueInputBuffer(TIMEOUT_US);
-                        if (inIndex >= 0) {
-                            ByteBuffer inBuf = audioEncoder.getInputBuffer(inIndex);
+                        int inIdx = audioEncoder.dequeueInputBuffer(-1);
+                        if (inIdx >= 0) {
+                            ByteBuffer inBuf = audioEncoder.getInputBuffer(inIdx);
                             int sampleSize = audioExtractor.readSampleData(inBuf, 0);
                             if (sampleSize < 0) {
-                                audioEncoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                audioEncoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                             } else {
                                 long pts = audioExtractor.getSampleTime();
                                 int flags = audioExtractor.getSampleFlags();
                                 if (flags < 0) flags = 0;
-                                audioEncoder.queueInputBuffer(inIndex, 0, sampleSize, pts, flags);
+                                audioEncoder.queueInputBuffer(inIdx, 0, sampleSize, pts, flags);
                                 audioExtractor.advance();
                             }
                         }
 
-                        int outIndex = audioEncoder.dequeueOutputBuffer(audioBufferInfo, TIMEOUT_US);
-                        if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                            MediaFormat newFormat = audioEncoder.getOutputFormat();
-                            outAudioTrack = mediaMuxer.addTrack(newFormat);
-                            if (outVideoTrack == -1) {
-                                // Video already added? If not, wait for it. If yes, start now.
-                                // If video had no track (shouldn't), start when possible.
+                        int outIdx = audioEncoder.dequeueOutputBuffer(audioBufferInfo, 0);
+                        if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            if (outAudioTrackIndex == -1) {
+                                MediaFormat newFormat = audioEncoder.getOutputFormat();
+                                outAudioTrackIndex = mediaMuxer.addTrack(newFormat);
+                                if (!muxerStarted && outVideoTrackIndex != -1) {
+                                    mediaMuxer.start();
+                                    muxerStarted = true;
+                                }
                             }
-                            if (!muxerStarted && outVideoTrack != -1) {
-                                mediaMuxer.start();
-                                muxerStarted = true;
-                            }
-                        } else if (outIndex >= 0) {
+                        } else if (outIdx >= 0) {
                             if ((audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                                 audioBufferInfo.size = 0;
                             }
-                            if (audioBufferInfo.size > 0 && muxerStarted && outAudioTrack != -1) {
-                                ByteBuffer outBuf = audioEncoder.getOutputBuffer(outIndex);
+                            if (audioBufferInfo.size > 0 && muxerStarted && outAudioTrackIndex != -1) {
+                                ByteBuffer outBuf = audioEncoder.getOutputBuffer(outIdx);
                                 if (outBuf != null) {
                                     outBuf.position(audioBufferInfo.offset);
                                     outBuf.limit(audioBufferInfo.offset + audioBufferInfo.size);
-                                    mediaMuxer.writeSampleData(outAudioTrack, outBuf, audioBufferInfo);
+                                    mediaMuxer.writeSampleData(outAudioTrackIndex, outBuf, audioBufferInfo);
                                 }
                             }
-                            audioEncoder.releaseOutputBuffer(outIndex, false);
+                            audioEncoder.releaseOutputBuffer(outIdx, false);
 
                             if ((audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                                 break;
                             }
                         }
                     }
+                    // Stop/release audio encoder
+                    try { audioEncoder.stop(); } catch (Exception ignore) {}
+                    try { audioEncoder.release(); } catch (Exception ignore) {}
+                    audioEncoder = null;
                 }
 
                 // Cleanup and finalize
                 if (muxerStarted) {
-                    try { mediaMuxer.stop(); } catch (Exception ignored) {}
+                    try { mediaMuxer.stop(); } catch (Exception ignore) {}
                 }
-                try { mediaMuxer.release(); } catch (Exception ignored) {}
-                try { videoEncoder.stop(); } catch (Exception ignored) {}
-                try { videoEncoder.release(); } catch (Exception ignored) {}
-                if (audioEncoder != null) {
-                    try { audioEncoder.stop(); } catch (Exception ignored) {}
-                    try { audioEncoder.release(); } catch (Exception ignored) {}
-                }
+                try { mediaMuxer.release(); } catch (Exception ignore) {}
+                mediaMuxer = null;
+
+                try { videoEncoder.stop(); } catch (Exception ignore) {}
+                try { videoEncoder.release(); } catch (Exception ignore) {}
+                videoEncoder = null;
+
                 videoExtractor.release();
                 audioExtractor.release();
 
                 File originalFile = new File(sourcePath);
                 File compressedFile = new File(destinationPath);
                 if (originalFile.exists()) {
-                    // Replace original with compressed
-                    // Best to move atomically if possible
                     //noinspection ResultOfMethodCallIgnored
                     originalFile.delete();
                 }
@@ -270,15 +268,12 @@ public class VideoCompressor {
                 Log.e(TAG, "Video compression failed", e);
                 callback.onError(e);
             } finally {
-                // Ensure resources freed if an exception happened early
-                try {
-                    if (mediaMuxer != null) {
-                        // stop only if started
-                        // stop may throw if never started
-                        // release even if stop failed
-                        // No-op if already released
-                    }
-                } catch (Exception ignored) {}
+                // Defensive cleanup
+                try { if (audioEncoder != null) { audioEncoder.stop(); audioEncoder.release(); } } catch (Exception ignore) {}
+                try { if (videoEncoder != null) { videoEncoder.stop(); videoEncoder.release(); } } catch (Exception ignore) {}
+                try { if (mediaMuxer != null) { mediaMuxer.release(); } } catch (Exception ignore) {}
+                try { videoExtractor.release(); } catch (Exception ignore) {}
+                try { audioExtractor.release(); } catch (Exception ignore) {}
             }
         });
     }
