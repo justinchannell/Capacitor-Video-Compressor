@@ -9,14 +9,50 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "VideoCompressor")
 public class VideoCompressorPlugin extends Plugin {
 
-    private VideoCompressor implementation = new VideoCompressor();
+    private VideoCompressor videoCompressor;
+
+    @Override
+    public void load() {
+        super.load();
+        videoCompressor = new VideoCompressor(getContext());
+    }
 
     @PluginMethod
-    public void echo(PluginCall call) {
-        String value = call.getString("value");
+    public void compressVideo(PluginCall call) {
+        String path = call.getString("path");
+        String quality = call.getString("quality", "high");
 
-        JSObject ret = new JSObject();
-        ret.put("value", implementation.echo(value));
-        call.resolve(ret);
+        if (path == null) {
+            call.reject("Must provide a 'path' to the video file.");
+            return;
+        }
+
+        File originalFile = new File(path);
+        if (!originalFile.exists()) {
+            call.reject("Original file does not exist at path: " + path);
+            return;
+        }
+
+        // Create a temporary destination path for the compressed file
+        String tempOutputPath = originalFile.getParent() + "/" + "temp_compressed_" + originalFile.getName();
+
+        videoCompressor.compress(path, tempOutputPath, quality, new VideoCompressor.VideoCompressionCallback() {
+            @Override
+            public void onSuccess() {
+                call.resolve(new JSObject());
+            }
+
+            @Override
+            public void onError(Exception e) {
+                call.reject("Video compression failed", e);
+            }
+            
+            @Override
+            public void onProgress(int progress) {
+                JSObject ret = new JSObject();
+                ret.put("progress", progress);
+                notifyListeners("videoProgress", ret);
+            }
+        });
     }
 }
