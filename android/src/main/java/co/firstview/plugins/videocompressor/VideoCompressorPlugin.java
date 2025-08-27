@@ -6,6 +6,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.File;
+
 @CapacitorPlugin(name = "VideoCompressor")
 public class VideoCompressorPlugin extends Plugin {
 
