@@ -224,4 +224,79 @@ public class VideoCompressor {
                             }
                             if (audioBufferInfo.size > 0 && muxerStarted && outAudioTrack != -1) {
                                 ByteBuffer outBuf = audioEncoder.getOutputBuffer(outIndex);
-                                if
+                                if (outBuf != null) {
+                                    outBuf.position(audioBufferInfo.offset);
+                                    outBuf.limit(audioBufferInfo.offset + audioBufferInfo.size);
+                                    mediaMuxer.writeSampleData(outAudioTrack, outBuf, audioBufferInfo);
+                                }
+                            }
+                            audioEncoder.releaseOutputBuffer(outIndex, false);
+
+                            if ((audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Cleanup and finalize
+                if (muxerStarted) {
+                    try { mediaMuxer.stop(); } catch (Exception ignored) {}
+                }
+                try { mediaMuxer.release(); } catch (Exception ignored) {}
+                try { videoEncoder.stop(); } catch (Exception ignored) {}
+                try { videoEncoder.release(); } catch (Exception ignored) {}
+                if (audioEncoder != null) {
+                    try { audioEncoder.stop(); } catch (Exception ignored) {}
+                    try { audioEncoder.release(); } catch (Exception ignored) {}
+                }
+                videoExtractor.release();
+                audioExtractor.release();
+
+                File originalFile = new File(sourcePath);
+                File compressedFile = new File(destinationPath);
+                if (originalFile.exists()) {
+                    // Replace original with compressed
+                    // Best to move atomically if possible
+                    //noinspection ResultOfMethodCallIgnored
+                    originalFile.delete();
+                }
+                //noinspection ResultOfMethodCallIgnored
+                compressedFile.renameTo(originalFile);
+
+                callback.onSuccess();
+
+            } catch (Exception e) {
+                Log.e(TAG, "Video compression failed", e);
+                callback.onError(e);
+            } finally {
+                // Ensure resources freed if an exception happened early
+                try {
+                    if (mediaMuxer != null) {
+                        // stop only if started
+                        // stop may throw if never started
+                        // release even if stop failed
+                        // No-op if already released
+                    }
+                } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    private int selectTrack(MediaExtractor extractor, String mimeTypePrefix) {
+        for (int i = 0; i < extractor.getTrackCount(); i++) {
+            MediaFormat format = extractor.getTrackFormat(i);
+            String mime = format.getString(MediaFormat.KEY_MIME);
+            if (mime != null && mime.startsWith(mimeTypePrefix)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    public interface VideoCompressionCallback {
+        void onSuccess();
+        void onError(Exception e);
+        void onProgress(int progress);
+    }
+}
