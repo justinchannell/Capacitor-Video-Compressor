@@ -46,6 +46,8 @@ public class VideoCompressor {
             boolean muxerStarted = false;
 
             try {
+                Log.d(TAG, "Starting compression: src=" + sourcePath + ", dst=" + destinationPath + ", quality=" + quality);
+
                 // Initialize MediaExtractor to read the source video and audio
                 videoExtractor.setDataSource(sourcePath);
                 audioExtractor.setDataSource(sourcePath);
@@ -54,6 +56,7 @@ public class VideoCompressor {
                 int videoTrackIndex = selectTrack(videoExtractor, "video/");
                 int audioTrackIndex = selectTrack(audioExtractor, "audio/");
                 hasAudio = audioTrackIndex != -1;
+                Log.d(TAG, "Tracks selected -> video=" + videoTrackIndex + ", audio=" + audioTrackIndex + ", hasAudio=" + hasAudio);
 
                 if (videoTrackIndex == -1) {
                     throw new IOException("No video track found in the source file.");
@@ -120,10 +123,12 @@ public class VideoCompressor {
                     }
                 }
                 final long totalDurationUs = Math.max(videoDurationUs, audioDurationUs);
+                Log.d(TAG, "Durations(us) -> video=" + videoDurationUs + ", audio=" + audioDurationUs + ", total=" + totalDurationUs);
                 int lastProgress = -1;
                 // Emit initial progress = 0
                 callback.onProgress(0);
                 lastProgress = 0;
+                Log.d(TAG, "Progress: 0%");
 
                 // --- Video Compression Loop ---
                 while (true) {
@@ -156,15 +161,18 @@ public class VideoCompressor {
                         // Add video track when encoder output format becomes available
                         if (outVideoTrackIndex == -1) {
                             MediaFormat newFormat = videoEncoder.getOutputFormat();
+                            Log.d(TAG, "Video encoder output format changed; adding video track: " + newFormat);
                             outVideoTrackIndex = mediaMuxer.addTrack(newFormat);
                             // If there's no audio, we can start now
                             if (!hasAudio && !muxerStarted) {
                                 mediaMuxer.start();
                                 muxerStarted = true;
+                                Log.d(TAG, "MediaMuxer started (video-only).");
                             } else if (hasAudio && outAudioTrackIndex != -1 && !muxerStarted) {
                                 // Start when both tracks added
                                 mediaMuxer.start();
                                 muxerStarted = true;
+                                Log.d(TAG, "MediaMuxer started (video+audio).");
                             }
                         }
                     } else if (outputBufferIndex >= 0) {
@@ -182,6 +190,7 @@ public class VideoCompressor {
                         videoEncoder.releaseOutputBuffer(outputBufferIndex, false);
 
                         if ((videoBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            Log.d(TAG, "Video encoder signaled end of stream.");
                             break;
                         }
                     }
@@ -193,6 +202,7 @@ public class VideoCompressor {
                     if (lastProgress < 99) {
                         lastProgress = 99;
                         callback.onProgress(99);
+                        Log.d(TAG, "Progress: 99% (audio/muxing phase)");
                     }
 
                     MediaFormat inputAudioFormat = audioExtractor.getTrackFormat(audioTrackIndex);
@@ -231,10 +241,12 @@ public class VideoCompressor {
                         if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                             if (outAudioTrackIndex == -1) {
                                 MediaFormat newFormat = audioEncoder.getOutputFormat();
+                                Log.d(TAG, "Audio encoder output format changed; adding audio track: " + newFormat);
                                 outAudioTrackIndex = mediaMuxer.addTrack(newFormat);
                                 if (!muxerStarted && outVideoTrackIndex != -1) {
                                     mediaMuxer.start();
                                     muxerStarted = true;
+                                    Log.d(TAG, "MediaMuxer started after adding audio track.");
                                 }
                             }
                         } else if (outIdx >= 0) {
@@ -252,6 +264,7 @@ public class VideoCompressor {
                             audioEncoder.releaseOutputBuffer(outIdx, false);
 
                             if ((audioBufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                Log.d(TAG, "Audio encoder signaled end of stream.");
                                 break;
                             }
                         }
@@ -264,9 +277,9 @@ public class VideoCompressor {
 
                 // Cleanup and finalize
                 if (muxerStarted) {
-                    try { mediaMuxer.stop(); } catch (Exception ignore) {}
+                    try { mediaMuxer.stop(); Log.d(TAG, "MediaMuxer stopped."); } catch (Exception ignore) {}
                 }
-                try { mediaMuxer.release(); } catch (Exception ignore) {}
+                try { mediaMuxer.release(); Log.d(TAG, "MediaMuxer released."); } catch (Exception ignore) {}
                 mediaMuxer = null;
 
                 try { videoEncoder.stop(); } catch (Exception ignore) {}
@@ -278,15 +291,20 @@ public class VideoCompressor {
 
                 File originalFile = new File(sourcePath);
                 File compressedFile = new File(destinationPath);
+                Log.d(TAG, "Pre-replace sizes (bytes) -> original=" + (originalFile.exists() ? originalFile.length() : -1) +
+                        ", compressedTmp=" + (compressedFile.exists() ? compressedFile.length() : -1));
                 if (originalFile.exists()) {
                     //noinspection ResultOfMethodCallIgnored
                     originalFile.delete();
+                    Log.d(TAG, "Original file deleted.");
                 }
                 //noinspection ResultOfMethodCallIgnored
                 compressedFile.renameTo(originalFile);
+                Log.d(TAG, "Compressed file moved to original path.");
 
                 // Final “100%” just before success
                 callback.onProgress(100);
+                Log.d(TAG, "Progress: 100%");
                 callback.onSuccess();
 
             } catch (Exception e) {
@@ -294,11 +312,11 @@ public class VideoCompressor {
                 callback.onError(e);
             } finally {
                 // Defensive cleanup
-                try { if (audioEncoder != null) { audioEncoder.stop(); audioEncoder.release(); } } catch (Exception ignore) {}
-                try { if (videoEncoder != null) { videoEncoder.stop(); videoEncoder.release(); } } catch (Exception ignore) {}
-                try { if (mediaMuxer != null) { mediaMuxer.release(); } } catch (Exception ignore) {}
-                try { videoExtractor.release(); } catch (Exception ignore) {}
-                try { audioExtractor.release(); } catch (Exception ignore) {}
+                try { if (audioEncoder != null) { audioEncoder.stop(); audioEncoder.release(); Log.d(TAG, "Audio encoder stopped/released."); } } catch (Exception ignore) {}
+                try { if (videoEncoder != null) { videoEncoder.stop(); videoEncoder.release(); Log.d(TAG, "Video encoder stopped/released."); } } catch (Exception ignore) {}
+                try { if (mediaMuxer != null) { mediaMuxer.release(); Log.d(TAG, "MediaMuxer released in finally."); } } catch (Exception ignore) {}
+                try { videoExtractor.release(); Log.d(TAG, "Video extractor released."); } catch (Exception ignore) {}
+                try { audioExtractor.release(); Log.d(TAG, "Audio extractor released."); } catch (Exception ignore) {}
             }
         });
     }
