@@ -1,5 +1,5 @@
 {
-  "name": "capacitor-video-compression",
+  "name": "capacitor-video-compressor",
   "version": "0.0.2",
   "description": "Native video compression for Android and iOS with Capacitor",
   "main": "dist/plugin.cjs.js",
