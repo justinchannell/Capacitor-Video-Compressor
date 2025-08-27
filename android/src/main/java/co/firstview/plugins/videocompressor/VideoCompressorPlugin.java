@@ -41,6 +41,11 @@ public class VideoCompressorPlugin extends Plugin {
         videoCompressor.compress(path, tempOutputPath, quality, new VideoCompressor.VideoCompressionCallback() {
             @Override
             public void onSuccess() {
+                // Send final 100% for UIs relying on the event
+                JSObject ret = new JSObject();
+                ret.put("progress", 100);
+                getActivity().runOnUiThread(() -> notifyListeners("videoProgress", ret));
+
                 call.resolve(new JSObject());
             }
 

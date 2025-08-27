@@ -178,6 +178,7 @@ public class VideoCompressor {
 
                 boolean vInputDone = false, vDecDone = false, vEncDone = false;
                 boolean aInputDone = !hasAudio, aDecDone = !hasAudio, aEncDone = !hasAudio;
+                boolean signaledVideoEosToEncoder = false; // NEW
 
                 // Bytes-per-sample for PCM16
                 final int bytesPerSample = 2 * Math.max(1, hasAudio ? audioChannelCount : 1);
@@ -222,6 +223,15 @@ public class VideoCompressor {
                             if ((vDecInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                                 vDecDone = true;
                                 Log.d(TAG, "Video decoder EOS.");
+                                if (!signaledVideoEosToEncoder) {
+                                    try {
+                                        videoEncoder.signalEndOfInputStream(); // IMPORTANT for Surface input
+                                        signaledVideoEosToEncoder = true;
+                                        Log.d(TAG, "Signaled encoder EOS via signalEndOfInputStream().");
+                                    } catch (Exception e) {
+                                        Log.w(TAG, "signalEndOfInputStream failed", e);
+                                    }
+                                }
                             }
                         }
                     }
