@@ -108,9 +108,22 @@ public class VideoCompressor {
                 // Add video track to muxer
                 videoExtractor.selectTrack(videoTrackIndex);
                 MediaCodec.BufferInfo videoBufferInfo = new MediaCodec.BufferInfo();
-                // Use safe duration read
+
+                // Pre-compute durations for progress (use the longest of video/audio)
                 long videoDurationUs = inputVideoFormat.containsKey(MediaFormat.KEY_DURATION)
                         ? inputVideoFormat.getLong(MediaFormat.KEY_DURATION) : 0L;
+                long audioDurationUs = 0L;
+                if (hasAudio) {
+                    MediaFormat audioFmtForDur = audioExtractor.getTrackFormat(audioTrackIndex);
+                    if (audioFmtForDur.containsKey(MediaFormat.KEY_DURATION)) {
+                        audioDurationUs = audioFmtForDur.getLong(MediaFormat.KEY_DURATION);
+                    }
+                }
+                final long totalDurationUs = Math.max(videoDurationUs, audioDurationUs);
+                int lastProgress = -1;
+                // Emit initial progress = 0
+                callback.onProgress(0);
+                lastProgress = 0;
 
                 // --- Video Compression Loop ---
                 while (true) {
@@ -126,9 +139,13 @@ public class VideoCompressor {
                             if (flags < 0) flags = 0;
                             videoEncoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, presentationTimeUs, flags);
 
-                            if (videoDurationUs > 0) {
-                                int progress = (int) Math.min(99, Math.max(0, (presentationTimeUs * 100) / videoDurationUs));
-                                callback.onProgress(progress);
+                            // Progress: compute against the longest track duration and emit only when it increases
+                            if (totalDurationUs > 0) {
+                                int newProgress = (int) Math.min(99, Math.max(0, (presentationTimeUs * 100) / totalDurationUs));
+                                if (newProgress > lastProgress) {
+                                    lastProgress = newProgress;
+                                    callback.onProgress(newProgress);
+                                }
                             }
                             videoExtractor.advance();
                         }
@@ -262,6 +279,8 @@ public class VideoCompressor {
                 //noinspection ResultOfMethodCallIgnored
                 compressedFile.renameTo(originalFile);
 
+                // Final “100%” just before success
+                callback.onProgress(100);
                 callback.onSuccess();
 
             } catch (Exception e) {
