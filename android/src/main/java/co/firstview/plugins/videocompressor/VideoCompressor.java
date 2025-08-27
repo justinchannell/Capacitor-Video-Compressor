@@ -139,14 +139,14 @@ public class VideoCompressor {
                             if (flags < 0) flags = 0;
                             videoEncoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, presentationTimeUs, flags);
 
-                            // Progress: compute against the longest track duration and emit only when it increases
-                            if (totalDurationUs > 0) {
-                                int newProgress = (int) Math.min(99, Math.max(0, (presentationTimeUs * 100) / totalDurationUs));
-                                if (newProgress > lastProgress) {
-                                    lastProgress = newProgress;
-                                    callback.onProgress(newProgress);
-                                }
+                            // Use video duration for video-loop progress
+                            long denom = videoDurationUs > 0 ? videoDurationUs : (totalDurationUs > 0 ? totalDurationUs : 1L);
+                            int newProgress = (int) Math.min(99, Math.max(0, (presentationTimeUs * 100) / denom));
+                            if (newProgress > lastProgress) {
+                                lastProgress = newProgress;
+                                callback.onProgress(newProgress);
                             }
+
                             videoExtractor.advance();
                         }
                     }
@@ -189,6 +189,12 @@ public class VideoCompressor {
 
                 // --- Audio Compression Loop (if audio track exists) ---
                 if (hasAudio) {
+                    // Ensure UI shows near-complete while finishing audio/muxing
+                    if (lastProgress < 99) {
+                        lastProgress = 99;
+                        callback.onProgress(99);
+                    }
+
                     MediaFormat inputAudioFormat = audioExtractor.getTrackFormat(audioTrackIndex);
 
                     MediaFormat outputAudioFormat = MediaFormat.createAudioFormat(

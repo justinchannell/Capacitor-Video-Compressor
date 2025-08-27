@@ -53,7 +53,7 @@ public class VideoCompressorPlugin extends Plugin {
             public void onProgress(int progress) {
                 JSObject ret = new JSObject();
                 ret.put("progress", progress);
-                notifyListeners("videoProgress", ret);
+                getActivity().runOnUiThread(() -> notifyListeners("videoProgress", ret));
             }
         });
     }
